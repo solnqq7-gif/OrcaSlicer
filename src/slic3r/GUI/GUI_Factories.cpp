@@ -109,6 +109,9 @@ std::map<std::string, std::vector<SimpleSettingData>>  SettingsFactory::OBJECT_C
                     {"slice_closing_radius", "",3}, {"resolution", "",4},
                     {"xy_hole_compensation", "",5}, {"xy_contour_compensation", "",6}, {"elefant_foot_compensation", "",7},
                     {"make_overhang_printable_angle","", 8},{"make_overhang_printable_hole_size","",9}, {"wall_sequence","",10},
+                    {"enable_wall_sequence_overhang","",10}, {"wall_sequence_overhang_angle","",10}, {"wall_sequence_overhang_max_angle","",10},
+                    {"wall_sequence_bottom_height","",10}, {"wall_sequence_elefant_foot_layers","",10}, {"wall_sequence_precise_outer_wall","",10},
+                    {"wall_sequence_switched_compensation","",10},
                     {"precise_z_height", "",10}
                     }},
     { L("Support"), {{"brim_type", "",1},{"brim_width", "",2},{"leading_brim_length", "",3},{"extra_brim_width", "",4},{"brim_object_gap", "",5},{"brim_flow_ratio", "",6},{"brim_use_efc_outline", "",7},

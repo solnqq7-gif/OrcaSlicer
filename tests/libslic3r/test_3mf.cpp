@@ -532,6 +532,76 @@ TEST_CASE("An object loads up to the component reference budget and fails past i
     }
 }
 
+TEST_CASE("3MF wall order migration requires loading project settings", "[3mf][ConditionalWallOrder]")
+{
+    const bool load_config = GENERATE(false, true);
+    const int global_toggle = GENERATE(-1, 0, 1); // -1 represents a pre-checkbox project.
+    const int local_toggle = GENERATE(-1, 0, 1);
+    const int scope = GENERATE(0, 1, 2); // Object, part, height range.
+    const char *threshold = GENERATE("wall_sequence_overhang_angle", "wall_sequence_bottom_height");
+    CAPTURE(load_config, global_toggle, local_toggle, scope, threshold);
+    ScopedTemporaryFile temp(".3mf");
+    ScopedTemporaryDir source_backup("orca_wall_order_src");
+    Model source;
+    source.set_backup_path(source_backup.string());
+    ModelObject *object = source.add_object();
+    object->name = "local wall order";
+    ModelVolume *volume = object->add_volume(make_cube(10., 10., 8.));
+    volume->name = "part";
+    object->add_instance();
+    ModelConfig &local = scope == 0 ? object->config : scope == 1 ? volume->config : object->layer_config_ranges[{0., 8.}];
+    local.set_key_value(threshold, new ConfigOptionFloat(1.));
+    if (local_toggle >= 0)
+        local.set_key_value("enable_wall_sequence_overhang", new ConfigOptionBool(local_toggle != 0));
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    if (global_toggle < 0)
+        config.erase("enable_wall_sequence_overhang");
+    else
+        config.set_key_value("enable_wall_sequence_overhang", new ConfigOptionBool(global_toggle != 0));
+    // Keep both global thresholds at zero so only the local threshold can trigger migration.
+    config.set_key_value("wall_sequence_overhang_angle", new ConfigOptionFloat(0.));
+    config.set_key_value("wall_sequence_bottom_height", new ConfigOptionFloat(0.));
+    const std::string path = temp.string();
+    StoreParams params;
+    params.path = path.c_str();
+    params.model = &source;
+    params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(params));
+
+    ScopedTemporaryDir destination_backup("orca_wall_order_dst");
+    Model destination;
+    destination.set_backup_path(destination_backup.string());
+    DynamicPrintConfig imported_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    struct ImportedResources {
+        PlateDataPtrs plates;
+        std::vector<Preset*> presets;
+        ~ImportedResources() { release_PlateData_list(plates); for (auto *preset : presets) delete preset; }
+    } resources;
+    bool bbs = false, orca = false;
+    Semver version;
+    const LoadStrategy strategy = load_config ? LoadStrategy::LoadModel | LoadStrategy::LoadConfig : LoadStrategy::LoadModel;
+    REQUIRE(load_bbs_3mf(path.c_str(), &imported_config, &substitutions, &destination, &resources.plates,
+                         &resources.presets, &bbs, &orca, &version, nullptr, strategy));
+    REQUIRE(destination.objects.size() == 1);
+    const ModelObject &loaded_object = *destination.objects.front();
+    REQUIRE(loaded_object.volumes.size() == 1);
+    if (scope == 2) REQUIRE(loaded_object.layer_config_ranges.size() == 1);
+    const ModelConfig &loaded_local = scope == 0 ? loaded_object.config : scope == 1 ? loaded_object.volumes.front()->config :
+                                                                               loaded_object.layer_config_ranges.begin()->second;
+    REQUIRE(loaded_local.has(threshold));
+    CHECK_THAT(loaded_local.get().opt_float(threshold), Catch::Matchers::WithinAbs(1., 1e-9));
+    const bool migrate_legacy = load_config && global_toggle < 0 && local_toggle < 0;
+    const bool expected_has_toggle = local_toggle >= 0 || migrate_legacy;
+    const bool expected_toggle = migrate_legacy || local_toggle != 0;
+    CHECK(loaded_local.has("enable_wall_sequence_overhang") == expected_has_toggle);
+    if (expected_has_toggle)
+        CHECK(loaded_local.get().opt_bool("enable_wall_sequence_overhang") == expected_toggle);
+    if (!load_config)
+        CHECK_FALSE(imported_config.has("enable_wall_sequence_overhang"));
+}
+
 TEST_CASE("A project with malformed paint data loads without the damaged facet", "[3mf][Regression]")
 {
     ScopedTemporaryFile temp(".3mf");

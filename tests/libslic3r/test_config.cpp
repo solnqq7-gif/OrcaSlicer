@@ -1665,3 +1665,25 @@ TEST_CASE("Default options of enum lists get their definition's keys map", "[Con
     }
     CHECK(enum_lists > 0);
 }
+
+
+TEST_CASE("Legacy conditional wall thresholds enable switching only without an explicit toggle", "[Config][ConditionalWallOrder]")
+{
+    const char *threshold = GENERATE("wall_sequence_overhang_angle", "wall_sequence_bottom_height");
+    const bool enabled = GENERATE(false, true);
+    CAPTURE(threshold, enabled);
+    DynamicPrintConfig legacy;
+    legacy.set_key_value(threshold, new ConfigOptionFloat(1.));
+    legacy.handle_legacy_composite();
+    REQUIRE(legacy.opt_bool("enable_wall_sequence_overhang"));
+
+    DynamicPrintConfig explicit_toggle;
+    explicit_toggle.set_key_value(threshold, new ConfigOptionFloat(1.));
+    explicit_toggle.set_key_value("enable_wall_sequence_overhang", new ConfigOptionBool(enabled));
+    const std::vector<std::string> project_changes = { threshold, "filament_flow_ratio", "nozzle_diameter" };
+    explicit_toggle.set_key_value("different_settings_to_system", new ConfigOptionStrings(project_changes));
+    explicit_toggle.handle_legacy_composite();
+    CHECK(explicit_toggle.opt_bool("enable_wall_sequence_overhang") == enabled);
+    CHECK(explicit_toggle.option<ConfigOptionStrings>("different_settings_to_system")->values == project_changes);
+    CHECK_FALSE(DynamicPrintConfig::full_print_config().opt_bool("enable_wall_sequence_overhang"));
+}

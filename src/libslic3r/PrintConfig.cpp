@@ -2712,6 +2712,96 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<WallSequence>(WallSequence::InnerOuter));
 
+    def = this->add("enable_wall_sequence_overhang", coBool);
+    def->label = L("Change walls printing order on overhangs");
+    def->category = L("Quality");
+    def->tooltip = L("When the walls printing order is Inner/Outer/Inner or Outer/Inner, print the walls in Inner/Outer order "
+                     "on overhanging layers and on the bottom layers selected below, so that the external wall can adhere to "
+                     "an already printed internal wall.\n"
+                     "The first object layer keeps the original walls printing order.\n"
+                     "This option is ignored in spiral vase mode.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("wall_sequence_overhang_angle", coFloat);
+    def->label = L("Inner/Outer on overhangs");
+    def->category = L("Quality");
+    def->tooltip = L("When the walls printing order is Inner/Outer/Inner or Outer/Inner, the walls of an island are printed in Inner/Outer order "
+                     "on the layers where the island overhangs the layer below more than this angle, so that the overhanging external wall "
+                     "can adhere to an already printed internal wall.\n"
+                     "The angle is measured from the vertical: 0° is a vertical wall, 45° is a typical chamfer. "
+                     "Set it slightly below the angle of the chamfers to be detected.\n"
+                     "With polyhole twist, polyholes are rotated on every layer and may be detected as overhangs.\n\n"
+                     "Set to 0 to disable.");
+    def->sidetext = u8"°";	// degrees, don't need translation
+    def->min = 0;
+    def->max = 89;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("wall_sequence_overhang_max_angle", coFloat);
+    def->label = L("Maximum overhang angle for Inner/Outer");
+    def->category = L("Quality");
+    def->tooltip = L("Islands overhanging the layer below more than this angle keep the original walls printing order. "
+                     "Only the islands whose steepest overhang lies between \"Inner/Outer on overhangs\" and this angle "
+                     "are printed in Inner/Outer order. Useful when steeper overhangs print better in the original order.\n"
+                     "The bottom layers selected below are not affected.\n"
+                     "Ignored unless it is greater than \"Inner/Outer on overhangs\".\n\n"
+                     "Set to 0 to disable.");
+    def->sidetext = u8"°";	// degrees, don't need translation
+    def->min = 0;
+    def->max = 89;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("wall_sequence_bottom_height", coFloat);
+    def->label = L("Inner/Outer up to height");
+    def->category = L("Quality");
+    def->tooltip = L("When the walls printing order is Inner/Outer/Inner or Outer/Inner, the layers from the bottom of the object up to this height "
+                     "are printed in Inner/Outer order. Useful for chamfered or rounded bottom edges.\n"
+                     "The first object layer keeps the original walls printing order.\n\n"
+                     "Set to 0 to disable.");
+    def->sidetext = L("mm");	// millimeters, CIS languages need translation
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("wall_sequence_elefant_foot_layers", coBool);
+    def->label = L("Inner/Outer on elephant foot compensation layers");
+    def->category = L("Quality");
+    def->tooltip = L("When the walls printing order is Inner/Outer/Inner or Outer/Inner, the layers shrunk by the elephant foot compensation "
+                     "are printed in Inner/Outer order. These layers are smaller than the layers above them, so the overhang angle "
+                     "may not detect a bottom chamfer there.\n"
+                     "The first object layer keeps the original walls printing order, so this only has an effect when "
+                     "the elephant foot compensation applies to more than one layer. It is ignored when printing on a raft.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("wall_sequence_precise_outer_wall", coBool);
+    def->label = L("Precise wall on switched layers");
+    def->category = L("Quality");
+    def->tooltip = L("Apply the precise wall to the islands printed in Inner/Outer order by the options above. On these layers the internal "
+                     "wall is printed before the external wall, the precise wall removes the overlap between them so that the external "
+                     "wall is not pushed outwards.\n"
+                     "The other layers keep the original walls printing order, the precise wall is ignored there.\n"
+                     "This option is independent of the \"Precise wall\" option.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("wall_sequence_switched_compensation", coFloat);
+    def->label = L("Size compensation on switched layers");
+    def->category = L("Quality");
+    def->tooltip = L("Shrink the islands printed in Inner/Outer order by the options above, to compensate for the external wall "
+                     "pushed outwards by the internal wall printed before it. Holes get larger by the same amount.\n"
+                     "The value is the total of both sides, each side moves inwards by half of it: 0.2 mm moves each side by 0.1 mm. "
+                     "Like the elephant foot compensation, narrow parts are shrunk less to stay printable.\n"
+                     "The other layers are not changed.\n\n"
+                     "Set to 0 to disable.");
+    def->sidetext = L("mm");	// millimeters, CIS languages need translation
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0));
+
     def = this->add("is_infill_first",coBool);
     def->label    = L("Print infill first");
     def->tooltip  = L("Order of wall/infill. When the tickbox is unchecked the walls are printed first, which works best in most cases.\n\nPrinting infill first may help with extreme overhangs as the walls have the neighbouring infill to adhere to. However, the infill will slightly push out the printed walls where it is attached to them, resulting in a worse external surface finish. It can also cause the infill to shine through the external surfaces of the part.");
@@ -9976,6 +10066,25 @@ void PrintConfigDef::handle_legacy_composite(DynamicPrintConfig &config)
     // Orca: a config saved before a key joined filament_options_with_variant stores it once per filament
     // rather than once per filament variant, and one exported by an older CLI may store a single value.
     normalize_filament_values_to_variants(config);
+
+    if (!config.has("enable_wall_sequence_overhang") &&
+        ((config.has("wall_sequence_overhang_angle") && config.opt_float("wall_sequence_overhang_angle") > 0.) ||
+         (config.has("wall_sequence_bottom_height") && config.opt_float("wall_sequence_bottom_height") > 0.))) {
+        // Configs saved before enable_wall_sequence_overhang was introduced enabled the feature by a non-zero angle or height.
+        config.set_key_value("enable_wall_sequence_overhang", new ConfigOptionBool(true));
+        // A project refreshes every unmodified option from its current system preset.
+        // Keep this inferred value when the new checkbox is absent from an older
+        // project's list of changed process settings. Filament/printer groups stay intact.
+        if (auto *different = config.option<ConfigOptionStrings>("different_settings_to_system");
+            different != nullptr && !different->values.empty()) {
+            std::vector<std::string> process_keys;
+            if (unescape_strings_cstyle(different->values.front(), process_keys) &&
+                std::find(process_keys.begin(), process_keys.end(), "enable_wall_sequence_overhang") == process_keys.end()) {
+                process_keys.emplace_back("enable_wall_sequence_overhang");
+                different->values.front() = escape_strings_cstyle(process_keys);
+            }
+        }
+    }
 }
 
 const PrintConfigDef print_config_def;

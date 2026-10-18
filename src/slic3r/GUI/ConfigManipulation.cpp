@@ -821,6 +821,20 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     for (auto el : { "inner_wall_speed", "outer_wall_speed", "small_perimeter_speed", "small_perimeter_threshold" })
         toggle_field(el, have_perimeters, variant_index);
 
+    // Orca: switching to Inner/Outer only matters when another walls printing order is selected, a spiral vase has a single wall
+    bool allow_wall_sequence_switch = have_perimeters && !config->opt_bool("spiral_mode") &&
+                                      config->opt_enum<WallSequence>("wall_sequence") != WallSequence::InnerOuter;
+    toggle_line("enable_wall_sequence_overhang", allow_wall_sequence_switch);
+    bool have_wall_sequence_switch = allow_wall_sequence_switch && config->opt_bool("enable_wall_sequence_overhang");
+    for (auto el : { "wall_sequence_overhang_angle", "wall_sequence_overhang_max_angle", "wall_sequence_bottom_height",
+                     "wall_sequence_elefant_foot_layers", "wall_sequence_precise_outer_wall", "wall_sequence_switched_compensation" })
+        toggle_line(el, have_wall_sequence_switch);
+    toggle_field("wall_sequence_overhang_max_angle", config->opt_float("wall_sequence_overhang_angle") > 0.);
+    // The first object layer keeps its order, the compensation must shrink more layers to have an effect.
+    toggle_field("wall_sequence_elefant_foot_layers", config->opt_float("elefant_foot_compensation") > 0. &&
+                                                      config->opt_int("elefant_foot_compensation_layers") > 1 &&
+                                                      config->opt_int("raft_layers") == 0);
+
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament_id uses the same logic as in Print::extruders()
     for (auto el : { "sparse_infill_pattern", "infill_combination", "fill_multiline","infill_direction",

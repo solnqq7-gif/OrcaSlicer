@@ -750,6 +750,23 @@ void Preset::remove_files(bool cloud_already_deleted)
     }
 }
 
+static t_config_option_keys preset_config_diff(const DynamicPrintConfig &config, const DynamicPrintConfig &parent)
+{
+    t_config_option_keys keys = config.diff(parent);
+    const std::string toggle = "enable_wall_sequence_overhang";
+    if (config.has(toggle) && std::find(keys.begin(), keys.end(), toggle) == keys.end()) {
+        // A non-zero threshold without the toggle is read as a pre-checkbox preset.
+        // Preserve its effective toggle in every saved/exported/synced preset diff.
+        for (const char *threshold : {"wall_sequence_overhang_angle", "wall_sequence_bottom_height"}) {
+            if (std::find(keys.begin(), keys.end(), threshold) != keys.end() && config.opt_float(threshold) > 0.) {
+                keys.emplace_back(toggle);
+                break;
+            }
+        }
+    }
+    return keys;
+}
+
 //BBS: add logic for only difference save
 bool Preset::save(DynamicPrintConfig* parent_config)
 {
@@ -780,7 +797,7 @@ bool Preset::save(DynamicPrintConfig* parent_config)
 
     //BBS: only save difference if it has parent
     if (parent_config) {
-        std::vector<std::string> dirty_options = config.diff(*parent_config);
+        std::vector<std::string> dirty_options = preset_config_diff(config, *parent_config);
 
         std::string extruder_id_name, extruder_variant_name;
         std::set<std::string> *key_set1 = nullptr, *key_set2 = nullptr;
@@ -1180,6 +1197,13 @@ static std::vector<std::string> s_Preset_print_options{
     "seam_position",
     "staggered_inner_seams",
     "wall_sequence",
+    "enable_wall_sequence_overhang",
+    "wall_sequence_overhang_angle",
+    "wall_sequence_overhang_max_angle",
+    "wall_sequence_bottom_height",
+    "wall_sequence_elefant_foot_layers",
+    "wall_sequence_precise_outer_wall",
+    "wall_sequence_switched_compensation",
     "is_infill_first",
     "sparse_infill_density",
     "fill_multiline",
@@ -2114,7 +2138,7 @@ Preset* PresetCollection::get_preset_differed_for_save(Preset& preset)
         *new_preset = preset;
 
         DynamicPrintConfig temp_config;
-        std::vector<std::string> dirty_options = preset.config.diff(parent_preset->config);
+        std::vector<std::string> dirty_options = preset_config_diff(preset.config, parent_preset->config);
 
         std::string extruder_id_name, extruder_variant_name;
         std::set<std::string> *key_set1 = nullptr, *key_set2 = nullptr;
@@ -2173,7 +2197,7 @@ int PresetCollection::get_differed_values_to_update(Preset& preset, std::map<std
     }
     if (parent_preset) {
         DynamicPrintConfig temp_config;
-        std::vector<std::string> dirty_options = preset.config.diff(parent_preset->config);
+        std::vector<std::string> dirty_options = preset_config_diff(preset.config, parent_preset->config);
 
         // Send the variant layout even when it matches the parent's, as the local save does: the loader
         // sizes the per-variant values by it and would otherwise keep only the first one.

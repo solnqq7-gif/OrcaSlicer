@@ -4,6 +4,7 @@
 #include "BridgeDetector.hpp"
 #include "ClipperUtils.hpp"
 #include "ClipperZUtils.hpp"
+#include "ElephantFootCompensation.hpp"
 #include "ExPolygon.hpp"
 #include "ExtrusionEntity.hpp"
 #include "ExtrusionEntityCollection.hpp"
@@ -572,7 +573,7 @@ static ExtrusionEntityCollection traverse_extrusions(const PerimeterGenerator& p
                 extrusion_coll.append(std::move(extrusion_loop));
                 // Orca: Reverse the order of paths for thin wall holes. We define thin wall hole as a hole with only one perimeter.
                 const bool thin_wall_hole = !pg_extrusion.is_contour && pg_extrusions.size() == 2;
-                if (thin_wall_hole && perimeter_generator.config->wall_sequence != WallSequence::OuterInner)
+                if (thin_wall_hole && perimeter_generator.island_wall_sequence != WallSequence::OuterInner)
                     std::reverse(extrusion_coll.entities.begin(), extrusion_coll.entities.end());
             }
             else {
@@ -1445,6 +1446,79 @@ static void defer_unsupported_loops(const PerimeterGenerator &perimeter_generato
             loop->print_after_infill = true;
 }
 
+// Optionally print inner walls before the outer wall on the selected bottom layers, on the
+// elephant foot compensation layers and on islands exceeding the overhang angle, but not its maximum. Unsupported-loop deferral still
+// runs after this ordering, so loops that need infill retain their anchors.
+bool PerimeterGenerator::wall_sequence_switch_enabled() const
+{
+    // Keep the original order on the first object layer, including when printed above a raft.
+    // A spiral vase has a single wall, its printing order does not matter.
+    return this->lower_slices_for_wall_sequence != nullptr && this->config->enable_wall_sequence_overhang && !this->print_config->spiral_mode &&
+           this->config->wall_sequence != WallSequence::InnerOuter;
+}
+
+void PerimeterGenerator::prepare_wall_sequence_overhang_detection()
+{
+    const double overhang_angle = this->config->wall_sequence_overhang_angle.value;
+    if (!this->wall_sequence_switch_enabled() || overhang_angle <= 0.)
+        return;
+    // Compare the slice planes' actual Z distance: neighbouring layers may have different heights.
+    // The small tolerance suppresses the numerical noise of vertical walls.
+    const double slice_distance = this->slice_z - this->lower_slice_z;
+    auto grow_lower_slices = [this, slice_distance](double angle) {
+        const double overhang_width = slice_distance * std::tan(Geometry::deg2rad(std::min(angle, 89.))) + 0.01;
+        // Compare original slices on both layers: printable_slices() trims even vertical sharp corners.
+        return offset(*this->lower_slices_for_wall_sequence, float(scale_(overhang_width)));
+    };
+    m_wall_sequence_lower_polygons = grow_lower_slices(overhang_angle);
+    if (this->config->wall_sequence_overhang_max_angle.value > overhang_angle)
+        m_wall_sequence_max_lower_polygons = grow_lower_slices(this->config->wall_sequence_overhang_max_angle.value);
+}
+
+void PerimeterGenerator::update_island_wall_sequence(const ExPolygon &island)
+{
+    this->island_wall_sequence = this->config->wall_sequence;
+    if (!this->wall_sequence_switch_enabled())
+        return;
+    const double bottom_height = this->config->wall_sequence_bottom_height.value;
+    // Islands shrunk by the elephant foot compensation (see PrintObject::slice_volumes()) are compared with
+    // uncompensated lower slices, so the angle may miss a bottom chamfer on these layers.
+    const bool elefant_foot_layer = this->config->wall_sequence_elefant_foot_layers && this->object_config->raft_layers.value == 0 &&
+                                    this->object_config->elefant_foot_compensation.value > 0. &&
+                                    this->layer_id < this->object_config->elefant_foot_compensation_layers.value;
+    if ((bottom_height > 0. && this->object_layer_top_z < bottom_height + EPSILON) || elefant_foot_layer) {
+        this->island_wall_sequence = WallSequence::InnerOuter;
+    } else if (const double overhang_angle = this->config->wall_sequence_overhang_angle.value; overhang_angle > 0.) {
+        const BoundingBox island_bbox = get_extents(island);
+        auto overhangs = [&island, &island_bbox](const Polygons &grown_lower_polygons) {
+            return !diff_ex(island, ClipperUtils::clip_clipper_polygons_with_subject_bbox(grown_lower_polygons, island_bbox)).empty();
+        };
+        // The steepest overhang of the island decides: beyond the upper angle the island keeps the original order.
+        const bool too_steep = this->config->wall_sequence_overhang_max_angle.value > overhang_angle &&
+                               overhangs(m_wall_sequence_max_lower_polygons);
+        if (!too_steep && overhangs(m_wall_sequence_lower_polygons))
+            this->island_wall_sequence = WallSequence::InnerOuter;
+    }
+}
+
+// Orca: precise_outer_wall only applies to the Inner/Outer walls printing order.
+// Islands switched to Inner/Outer by update_island_wall_sequence() use wall_sequence_precise_outer_wall instead.
+bool PerimeterGenerator::precise_outer_wall_enabled() const
+{
+    if (this->config->wall_sequence == WallSequence::InnerOuter)
+        return this->config->precise_outer_wall;
+    return this->island_wall_sequence == WallSequence::InnerOuter && this->config->wall_sequence_precise_outer_wall;
+}
+
+// Shrink of each side of an island switched to Inner/Outer by update_island_wall_sequence(): its external wall
+// is pushed outwards by the internal wall printed before it. The option holds the total of both sides.
+double PerimeterGenerator::switched_island_compensation() const
+{
+    if (this->config->wall_sequence == WallSequence::InnerOuter || this->island_wall_sequence != WallSequence::InnerOuter)
+        return 0.;
+    return 0.5 * this->config->wall_sequence_switched_compensation.value;
+}
+
 void PerimeterGenerator::process_classic()
 {
     group_region_by_fuzzify(*this);
@@ -1459,12 +1533,10 @@ void PerimeterGenerator::process_classic()
     coord_t ext_perimeter_width     = this->ext_perimeter_flow.scaled_width();
 
     coord_t ext_perimeter_spacing   = this->ext_perimeter_flow.scaled_spacing();
-    coord_t ext_perimeter_spacing2;
-    // Orca: ignore precise_outer_wall if wall_sequence is not InnerOuter
-    if(config->precise_outer_wall && config->wall_sequence == WallSequence::InnerOuter)
-        ext_perimeter_spacing2 = scaled<coord_t>(0.5f * (this->ext_perimeter_flow.width() + this->perimeter_flow.width()));
-    else
-        ext_perimeter_spacing2 = scaled<coord_t>(0.5f * (this->ext_perimeter_flow.spacing() + this->perimeter_flow.spacing()));
+    // Selected per island, see precise_outer_wall_enabled().
+    const coord_t precise_ext_perimeter_spacing2 = scaled<coord_t>(0.5f * (this->ext_perimeter_flow.width() + this->perimeter_flow.width()));
+    const coord_t default_ext_perimeter_spacing2 = scaled<coord_t>(0.5f * (this->ext_perimeter_flow.spacing() + this->perimeter_flow.spacing()));
+    coord_t ext_perimeter_spacing2 = default_ext_perimeter_spacing2;
 
     // overhang perimeters
     m_mm3_per_mm_overhang      		= this->overhang_flow.mm3_per_mm();
@@ -1518,6 +1590,7 @@ void PerimeterGenerator::process_classic()
     Surfaces all_surfaces = this->slices->surfaces;
 
     process_no_bridge(all_surfaces, perimeter_spacing, ext_perimeter_width);
+    prepare_wall_sequence_overhang_detection();
     // BBS: don't simplify too much which influence arc fitting when export gcode if arc_fitting is enabled
     double surface_simplify_resolution = (print_config->enable_arc_fitting && !this->has_fuzzy_skin) ? 0.2 * m_scaled_resolution : m_scaled_resolution;
     //BBS: reorder the surface to reduce the travel time
@@ -1532,6 +1605,8 @@ void PerimeterGenerator::process_classic()
     const bool only_one_wall_first_layer = this->config->only_one_wall_first_layer && has_bottom_shell_layers(*this->config);
     for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
         const Surface &surface = all_surfaces[surface_order[order_idx]];
+        update_island_wall_sequence(surface.expolygon);
+        ext_perimeter_spacing2 = precise_outer_wall_enabled() ? precise_ext_perimeter_spacing2 : default_ext_perimeter_spacing2;
         // detect how many perimeters must be generated for this island
         int loop_number = this->config->wall_loops + surface.extra_perimeters - 1;  // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
@@ -1544,6 +1619,9 @@ void PerimeterGenerator::process_classic()
             loop_number = 0;
 
         ExPolygons last        = union_ex(surface.expolygon.simplify_p(surface_simplify_resolution));
+        // Same shrinking as the elephant foot compensation, which keeps narrow parts printable.
+        if (const double compensation = switched_island_compensation(); compensation > 0.)
+            last = union_ex(elephant_foot_compensation(last, this->ext_perimeter_flow, compensation));
         ExPolygons gaps;
         ExPolygons top_fills;
         ExPolygons fill_clip;
@@ -1836,7 +1914,7 @@ void PerimeterGenerator::process_classic()
             // if brim will be printed, reverse the order of perimeters so that
             // we continue inwards after having finished the brim
             // TODO: add test for perimeter order
-            bool is_outer_wall_first = this->config->wall_sequence == WallSequence::OuterInner;
+            bool is_outer_wall_first = this->island_wall_sequence == WallSequence::OuterInner;
             if (is_outer_wall_first ||
                 //BBS: always print outer wall first when there indeed has brim.
                 // btLeadingEdgeOnly is an outer brim too (a belt brim at the part's first contact).
@@ -1846,7 +1924,7 @@ void PerimeterGenerator::process_classic()
                     this->object_config->brim_width.value > 0))
                 entities.reverse();
             // Orca: sandwich mode. Apply after 1st layer.
-            else if ((this->config->wall_sequence == WallSequence::InnerOuterInner) && layer_id > 0){
+            else if ((this->island_wall_sequence == WallSequence::InnerOuterInner) && layer_id > 0){
                 entities.reverse(); // reverse all entities - order them from external to internal
                 if(entities.entities.size()>2){ // 3 walls minimum needed to do inner outer inner ordering
                     int position = 0; // index to run the re-ordering for multiple external perimeters in a single island.
@@ -2543,6 +2621,7 @@ void PerimeterGenerator::process_arachne()
     Surfaces all_surfaces = this->slices->surfaces;
 
     process_no_bridge(all_surfaces, perimeter_spacing, ext_perimeter_width);
+    prepare_wall_sequence_overhang_detection();
     // BBS: don't simplify too much which influence arc fitting when export gcode if arc_fitting is enabled
     double surface_simplify_resolution = (print_config->enable_arc_fitting && !this->has_fuzzy_skin) ? 0.2 * m_scaled_resolution : m_scaled_resolution;
     // ORCA: neither one-wall option has a surface to act on without the shell behind it, see
@@ -2553,6 +2632,7 @@ void PerimeterGenerator::process_arachne()
     // we need to process each island separately because we might have different
     // extra perimeters for each one
     for (const Surface& surface : all_surfaces) {
+        update_island_wall_sequence(surface.expolygon);
         coord_t bead_width_0 = ext_perimeter_spacing;
         // detect how many perimeters must be generated for this island
         int loop_number = this->config->wall_loops + surface.extra_perimeters - 1; // 0-indexed loops
@@ -2570,9 +2650,13 @@ void PerimeterGenerator::process_arachne()
         if (is_topmost_layer && loop_number > 0 && only_one_wall_top)
             loop_number = 0;
         
-        auto apply_precise_outer_wall = config->precise_outer_wall && config->wall_sequence == WallSequence::InnerOuter;
+        auto apply_precise_outer_wall = precise_outer_wall_enabled();
+        Polygons island = surface.expolygon.simplify_p(surface_simplify_resolution);
+        // Same shrinking as the elephant foot compensation, which keeps narrow parts printable.
+        if (const double compensation = switched_island_compensation(); compensation > 0.)
+            island = to_polygons(elephant_foot_compensation(union_ex(island), this->ext_perimeter_flow, compensation));
         // Orca: properly adjust offset for the outer wall if precise_outer_wall is enabled.
-        ExPolygons last = offset_ex(surface.expolygon.simplify_p(surface_simplify_resolution),
+        ExPolygons last = offset_ex(island,
                        apply_precise_outer_wall? -float(ext_perimeter_width - ext_perimeter_spacing )
                                                  : -float(ext_perimeter_width / 2. - ext_perimeter_spacing / 2.));
         
@@ -2752,12 +2836,12 @@ void PerimeterGenerator::process_arachne()
         int direction = -1;
 
 		bool is_outer_wall_first =
-            	this->config->wall_sequence == WallSequence::OuterInner ||
-            	this->config->wall_sequence == WallSequence::InnerOuterInner;
+                this->island_wall_sequence == WallSequence::OuterInner ||
+                this->island_wall_sequence == WallSequence::InnerOuterInner;
         
         if (layer_id == 0){ // disable inner outer inner algorithm after the first layer
         	is_outer_wall_first =
-            	this->config->wall_sequence == WallSequence::OuterInner;
+                this->island_wall_sequence == WallSequence::OuterInner;
         }
         if (is_outer_wall_first) {
             start_perimeter = 0;
@@ -2845,7 +2929,7 @@ void PerimeterGenerator::process_arachne()
         }
 
        // printf("New Layer: Layer ID %d\n",layer_id); //debug - new layer
-        if (this->config->wall_sequence == WallSequence::InnerOuterInner && layer_id > 0) { // only enable inner outer inner algorithm after first layer
+        if (this->island_wall_sequence == WallSequence::InnerOuterInner && layer_id > 0) { // only enable inner outer inner algorithm after first layer
             if (ordered_extrusions.size() > 2) { // 3 walls minimum needed to do inner outer inner ordering
                 int position = 0; // index to run the re-ordering for multiple external perimeters in a single island.
                 int arr_i, arr_j = 0;    // indexes to run through the walls in the for loops

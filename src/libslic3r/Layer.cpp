@@ -158,11 +158,26 @@ bool Layer::is_perimeter_compatible(const Print& print, const PrintRegion& a, co
 {
     const PrintRegionConfig& config       = a.config();
     const PrintRegionConfig& other_config = b.config();
+    // Whether the walls printing order may change on some layers, see PerimeterGenerator::update_island_wall_sequence().
+    auto wall_sequence_switch_active = [&print](const PrintRegionConfig &cfg) {
+        return cfg.wall_sequence != WallSequence::InnerOuter && cfg.enable_wall_sequence_overhang && !print.config().spiral_mode &&
+               (cfg.wall_sequence_overhang_angle > 0. || cfg.wall_sequence_bottom_height > 0. || cfg.wall_sequence_elefant_foot_layers);
+    };
+    const bool switch_active = wall_sequence_switch_active(config);
 
         return config.outer_wall_filament_id       == other_config.outer_wall_filament_id
 		&& config.inner_wall_filament_id       == other_config.inner_wall_filament_id
 		&& config.wall_loops                  == other_config.wall_loops
 		&& config.wall_sequence               == other_config.wall_sequence
+        // Inactive wall-order settings must not split otherwise compatible regions.
+        && switch_active == wall_sequence_switch_active(other_config)
+        && (!switch_active ||
+            (config.wall_sequence_overhang_angle == other_config.wall_sequence_overhang_angle &&
+             config.wall_sequence_overhang_max_angle == other_config.wall_sequence_overhang_max_angle &&
+             config.wall_sequence_bottom_height == other_config.wall_sequence_bottom_height &&
+             config.wall_sequence_elefant_foot_layers == other_config.wall_sequence_elefant_foot_layers &&
+             config.wall_sequence_precise_outer_wall == other_config.wall_sequence_precise_outer_wall &&
+             config.wall_sequence_switched_compensation == other_config.wall_sequence_switched_compensation))
 		&& config.is_infill_first             == other_config.is_infill_first
 		&& config.inner_wall_speed.get_at(print.get_extruder_id(config.outer_wall_filament_id)) == other_config.inner_wall_speed.get_at(print.get_extruder_id(config.outer_wall_filament_id))
 		&& config.outer_wall_speed.get_at(print.get_extruder_id(config.outer_wall_filament_id)) == other_config.outer_wall_speed.get_at(print.get_extruder_id(config.outer_wall_filament_id))

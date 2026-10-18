@@ -14,8 +14,10 @@
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Config.hpp"
 #include <cstddef>
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/BoundingBox.hpp"
@@ -992,5 +994,417 @@ TEST_CASE("A hole whose outer wall touches the contour's runs with it", "[Perime
         REQUIRE(layers[i].holes_ccw.size() == 1);
         CHECK(layers[i].contours_ccw.front() == ccw);
         CHECK(layers[i].holes_ccw.front() == ccw);
+    }
+}
+
+
+namespace {
+
+// Record loop depth in emitted island order; coordinates may legitimately differ
+// between generators, but the conditional ordering must match their own IO result.
+std::vector<std::vector<int>> conditional_wall_orders(const Print &print)
+{
+    std::vector<std::vector<int>> orders;
+    for (const auto &island : wall_islands(print)) {
+        std::vector<int> order;
+        for (const ExtrusionLoop *loop : island)
+            order.push_back(loop->inset_idx);
+        orders.push_back(std::move(order));
+    }
+    return orders;
+}
+
+DynamicPrintConfig conditional_wall_config(const char *generator, const char *sequence)
+{
+    auto config = unsupported_walls_config(generator, false);
+    config.set_deserialize_strict({
+        { "wall_sequence", sequence },
+        { "wall_loops", 4 },
+        { "brim_type", "no_brim" },
+        { "only_one_wall_top", false },
+        { "enable_wall_sequence_overhang", false },
+        { "wall_sequence_overhang_angle", 0. },
+        { "wall_sequence_bottom_height", 0. },
+    });
+    return config;
+}
+
+// A constant cross-section with either a 30-degree tip or five 36-degree tips.
+TriangleMesh vertical_sharp_prism(bool star, double height)
+{
+    std::vector<Vec2f> outline;
+    if (star) {
+        for (int i = 0; i < 10; ++i) {
+            const double radius = i % 2 == 0 ? 12. : 12. * std::cos(2. * PI / 5.) / std::cos(PI / 5.);
+            outline.emplace_back(float(radius * std::cos(i * PI / 5.)), float(radius * std::sin(i * PI / 5.)));
+        }
+    } else {
+        const float half_width = float(20. * std::tan(PI / 12.));
+        outline = { Vec2f(20.f, 0.f), Vec2f(0.f, half_width), Vec2f(0.f, -half_width) };
+    }
+    indexed_triangle_set mesh;
+    Vec2f center = Vec2f::Zero();
+    for (const Vec2f &point : outline) center += point;
+    center /= float(outline.size());
+    for (float z : {0.f, float(height)})
+        for (const Vec2f &point : outline)
+            mesh.vertices.emplace_back(point.x(), point.y(), z);
+    const int n = int(outline.size());
+    mesh.vertices.emplace_back(center.x(), center.y(), 0.f);
+    mesh.vertices.emplace_back(center.x(), center.y(), float(height));
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        mesh.indices.emplace_back(2 * n, j, i);
+        mesh.indices.emplace_back(2 * n + 1, n + i, n + j);
+        mesh.indices.emplace_back(i, j, n + j);
+        mesh.indices.emplace_back(i, n + j, n + i);
+    }
+    return TriangleMesh(std::move(mesh));
+}
+
+} // namespace
+
+TEST_CASE("Vertical sharp corners do not trigger conditional wall ordering", "[Perimeters][ConditionalWallOrder][SharpCorners]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    const bool star = GENERATE(false, true);
+    const auto [layer_height, angle] = GENERATE(table<double, double>({ {0.2, 40.}, {0.1, 40.}, {0.15, 30.} }));
+    CAPTURE(generator, sequence, star, layer_height, angle);
+    constexpr double model_height = 8.;
+    const TriangleMesh coupon = vertical_sharp_prism(star, model_height);
+    auto config = conditional_wall_config(generator, sequence);
+    config.set_deserialize_strict({ { "layer_height", layer_height },
+                                    { "initial_layer_print_height", layer_height },
+                                    { "nozzle_diameter", "0.4" },
+                                    { "min_feature_size", "25%" },
+                                    { "wall_loops", 3 },
+                                    { "wall_sequence_overhang_angle", angle } });
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" } });
+    init_and_process_print({ coupon }, inner_outer, config);
+    const auto off = conditional_wall_orders(original);
+    const auto on = conditional_wall_orders(conditional);
+    const auto io = conditional_wall_orders(inner_outer);
+    REQUIRE(off.size() > 1);
+    REQUIRE(on.size() == off.size());
+    REQUIRE(io.size() == off.size());
+    CHECK(off.at(1) != io.at(1)); // Ensure the fixture can detect an unwanted switch.
+    CHECK(on.front() == off.front());
+    CHECK(on == off);
+}
+
+TEST_CASE("Conditional wall order switches only islands above the selected angle", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    const double threshold = GENERATE(30., 60.);
+    CAPTURE(generator, sequence, threshold);
+
+    // Shear a 4mm-tall cube by 4mm: one wall overhangs at exactly 45 degrees.
+    TriangleMesh coupon = make_cube(12., 12., 4.);
+    Transform3d shear = Transform3d::Identity();
+    shear.matrix()(0, 2) = 1.;
+    coupon.transform(shear);
+
+    auto config = conditional_wall_config(generator, sequence);
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_overhang_angle", threshold } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" } });
+    init_and_process_print({ coupon }, inner_outer, config);
+
+    const auto off = conditional_wall_orders(original);
+    const auto on = conditional_wall_orders(conditional);
+    const auto io = conditional_wall_orders(inner_outer);
+    REQUIRE(on.size() == 20); // 4mm / 0.2mm; exactly one island per layer.
+    REQUIRE(off.size() == on.size());
+    REQUIRE(io.size() == on.size());
+    REQUIRE_FALSE(off.front().empty());
+    CHECK(on.front() == off.front());
+    CHECK(off.at(1) != io.at(1)); // The fixture must distinguish the selected orders.
+    for (size_t i = 1; i < on.size(); ++i) {
+        CAPTURE(i);
+        CHECK(on[i] == (threshold < 45. ? io[i] : off[i]));
+    }
+}
+
+TEST_CASE("Conditional wall order keeps islands steeper than the maximum angle", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    // A maximum angle not above the threshold is ignored.
+    const auto [steep_face, max_angle, switched] = GENERATE(table<bool, double, bool>({
+        {false, 0., true}, {false, 60., true}, {false, 40., false}, {false, 20., true}, {true, 60., false}, {true, 80., true} }));
+    CAPTURE(generator, sequence, steep_face, max_angle);
+
+    // Shear a 4mm-tall cube: one wall overhangs at 45 degrees, optionally a second one of the same island at 70 degrees.
+    TriangleMesh coupon = make_cube(12., 12., 4.);
+    Transform3d shear = Transform3d::Identity();
+    shear.matrix()(0, 2) = 1.;
+    if (steep_face)
+        shear.matrix()(1, 2) = std::tan(70. * PI / 180.);
+    coupon.transform(shear);
+
+    auto config = conditional_wall_config(generator, sequence);
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_overhang_angle", 30. },
+                                    { "wall_sequence_overhang_max_angle", max_angle } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" } });
+    init_and_process_print({ coupon }, inner_outer, config);
+
+    const auto off = conditional_wall_orders(original);
+    const auto on = conditional_wall_orders(conditional);
+    const auto io = conditional_wall_orders(inner_outer);
+    REQUIRE(on.size() == 20); // 4mm / 0.2mm; exactly one island per layer.
+    REQUIRE(off.size() == on.size());
+    REQUIRE(io.size() == on.size());
+    CHECK(on.front() == off.front());
+    CHECK(off.at(1) != io.at(1)); // The fixture must distinguish the selected orders.
+    for (size_t i = 1; i < on.size(); ++i) {
+        CAPTURE(i);
+        CHECK(on[i] == (switched ? io[i] : off[i]));
+    }
+}
+
+TEST_CASE("Bottom height changes wall order after the first layer and stops at its limit", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    CAPTURE(generator, sequence);
+    auto config = conditional_wall_config(generator, sequence);
+    const TriangleMesh coupon = make_cube(12., 12., 4.);
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_bottom_height", 1. } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" } });
+    init_and_process_print({ coupon }, inner_outer, config);
+    const auto off = conditional_wall_orders(original);
+    const auto on = conditional_wall_orders(conditional);
+    const auto io = conditional_wall_orders(inner_outer);
+    REQUIRE(on.size() == 20);
+    REQUIRE(off.size() == on.size());
+    REQUIRE(io.size() == on.size());
+    CHECK(off.at(1) != io.at(1));
+    for (size_t i = 0; i < on.size(); ++i) {
+        CAPTURE(i);
+        // Layers 2 through 5 end at 0.4 through 1.0mm. Layer 1 stays unchanged.
+        const bool within_height = i > 0 && i < 5;
+        const auto &expected = within_height ? io[i] : off[i];
+        CHECK(on[i] == expected);
+    }
+}
+
+TEST_CASE("Conditional wall ordering preserves unsupported walls waiting for infill", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const bool unsupported_last = GENERATE(false, true);
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    CAPTURE(generator, unsupported_last, sequence);
+    auto config = conditional_wall_config(generator, sequence);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_overhang_angle", 40. },
+                                    { "unsupported_wall_last", unsupported_last } });
+    Print print;
+    Model model;
+    box_over_cavity(print, model, config);
+    const auto ceiling = layer_gcode(gcode(print), cavity_ceiling_z);
+    REQUIRE_FALSE(ceiling.empty());
+    const auto loops = unsupported_loops(print, cavity_ceiling_z);
+    REQUIRE_FALSE(loops.empty());
+    CHECK(loops_held_back_for_infill(loops) == (unsupported_last ? int(loops.size()) : 0));
+    const auto expected = unsupported_last ? std::vector<std::string>{ "perimeter", "infill", "perimeter" }
+                                           : std::vector<std::string>{ "perimeter", "infill" };
+    CHECK(role_sequence(ceiling, { "perimeter", "infill" }) == expected);
+}
+
+TEST_CASE("Elephant foot layers change wall order after the first layer while compensated", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    // A single compensated layer is the first one, which keeps its order; a raft disables the compensation.
+    const auto [compensated_layers, raft_layers, switched_layers] = GENERATE(table<int, int, size_t>({ {3, 0, 2}, {1, 0, 0}, {3, 2, 0} }));
+    CAPTURE(generator, sequence, compensated_layers, raft_layers);
+    auto config = conditional_wall_config(generator, sequence);
+    config.set_deserialize_strict({ { "elefant_foot_compensation", 0.2 },
+                                    { "elefant_foot_compensation_layers", compensated_layers },
+                                    { "raft_layers", raft_layers } });
+    const TriangleMesh coupon = make_cube(12., 12., 4.);
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_elefant_foot_layers", true } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" } });
+    init_and_process_print({ coupon }, inner_outer, config);
+    const auto off = conditional_wall_orders(original);
+    const auto on = conditional_wall_orders(conditional);
+    const auto io = conditional_wall_orders(inner_outer);
+    REQUIRE(off.size() > 4);
+    REQUIRE(on.size() == off.size());
+    REQUIRE(io.size() == off.size());
+    CHECK(off.at(1) != io.at(1));
+    for (size_t i = 0; i < on.size(); ++i) {
+        CAPTURE(i);
+        const bool compensated = i > 0 && i <= switched_layers;
+        const auto &expected = compensated ? io[i] : off[i];
+        CHECK(on[i] == expected);
+    }
+}
+
+TEST_CASE("Spiral vase ignores conditional wall order settings of its regions", "[Perimeters][ConditionalWallOrder]")
+{
+    // A modifier changing the walls printing order itself still splits the vase, as upstream.
+    const bool change_wall_sequence = GENERATE(false, true);
+    CAPTURE(change_wall_sequence);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({ { "spiral_mode", true },
+                                    { "wall_loops", 1 },
+                                    { "top_shell_layers", 0 },
+                                    { "sparse_infill_density", "0%" },
+                                    { "wall_sequence", "inner-outer-inner wall" },
+                                    { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_overhang_angle", 30. } });
+    Model model;
+    ModelObject *object = model.add_object();
+    object->name = "vase";
+    object->add_volume(make_cube(20., 20., 10.), ModelVolumeType::MODEL_PART, false);
+    ModelVolume *modifier = object->add_volume(make_cube(20., 20., 5.), ModelVolumeType::PARAMETER_MODIFIER, false);
+    if (change_wall_sequence)
+        modifier->config.set_key_value("wall_sequence", new ConfigOptionEnum<WallSequence>(WallSequence::OuterInner));
+    else
+        modifier->config.set_key_value("wall_sequence_overhang_angle", new ConfigOptionFloat(45.));
+    object->add_instance();
+    object->ensure_on_bed();
+    Print print;
+    print.auto_assign_extruders(object);
+    print.apply(model, config);
+    REQUIRE(print.objects().size() == 1);
+    REQUIRE(print.objects().front()->all_regions().size() == 2);
+    // Only the vase error matters here, the default config may fail later checks unrelated to the walls.
+    const std::string vase_error = "Spiral (vase) mode does not work when an object contains more than one material.";
+    const std::string error = print.validate().string;
+    if (change_wall_sequence)
+        CHECK(error == vase_error);
+    else
+        CHECK(error != vase_error);
+}
+
+namespace {
+
+// Depth and extents of a loop: inset_idx, min x, min y, max x, max y.
+using LoopExtents = std::array<coord_t, 5>;
+
+// The loops of every island, in emitted island order.
+std::vector<std::vector<LoopExtents>> wall_extents(const Print &print)
+{
+    std::vector<std::vector<LoopExtents>> islands;
+    for (const auto &island : wall_islands(print)) {
+        std::vector<LoopExtents> loops;
+        for (const ExtrusionLoop *loop : island) {
+            const BoundingBox bbox = get_extents(loop->polygon());
+            loops.push_back({ coord_t(loop->inset_idx), bbox.min.x(), bbox.min.y(), bbox.max.x(), bbox.max.y() });
+        }
+        islands.push_back(std::move(loops));
+    }
+    return islands;
+}
+
+} // namespace
+
+TEST_CASE("Precise wall on switched layers applies only to the islands switched to Inner/Outer", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall");
+    const bool precise = GENERATE(false, true);
+    CAPTURE(generator, sequence, precise);
+    auto sorted = [](std::vector<LoopExtents> loops) {
+        std::sort(loops.begin(), loops.end());
+        return loops;
+    };
+    auto config = conditional_wall_config(generator, sequence);
+    // Ignored for the original order, it must not reach the switched islands either.
+    config.set_deserialize_strict({ { "precise_outer_wall", true } });
+    const TriangleMesh coupon = make_cube(12., 12., 4.);
+    Print original, conditional, inner_outer;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_bottom_height", 1. },
+                                    { "wall_sequence_precise_outer_wall", precise } });
+    init_and_process_print({ coupon }, conditional, config);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", false },
+                                    { "wall_sequence", "inner wall/outer wall" },
+                                    { "precise_outer_wall", precise } });
+    init_and_process_print({ coupon }, inner_outer, config);
+    const auto off = wall_extents(original);
+    const auto on = wall_extents(conditional);
+    const auto io = wall_extents(inner_outer);
+    REQUIRE(on.size() == 20);
+    REQUIRE(off.size() == on.size());
+    REQUIRE(io.size() == on.size());
+    CHECK(off.at(1) != io.at(1));
+    // The fixture must distinguish the precise wall geometry.
+    CHECK((sorted(off.at(1)) != sorted(io.at(1))) == precise);
+    for (size_t i = 0; i < on.size(); ++i) {
+        CAPTURE(i);
+        // Layers 2 through 5 end at 0.4 through 1.0mm. Layer 1 stays unchanged.
+        const bool within_height = i > 0 && i < 5;
+        CHECK(on[i] == (within_height ? io[i] : off[i]));
+    }
+}
+
+TEST_CASE("Size compensation on switched layers shrinks only the islands switched to Inner/Outer", "[Perimeters][ConditionalWallOrder]")
+{
+    const char *generator = GENERATE("classic", "arachne");
+    // Inner/Outer itself is never switched, so it is never compensated either.
+    const char *sequence = GENERATE("outer wall/inner wall", "inner-outer-inner wall", "inner wall/outer wall");
+    CAPTURE(generator, sequence);
+    constexpr double compensation = 0.2;
+    auto config = conditional_wall_config(generator, sequence);
+    config.set_deserialize_strict({ { "enable_wall_sequence_overhang", true },
+                                    { "wall_sequence_bottom_height", 1. } });
+    const TriangleMesh coupon = make_cube(12., 12., 4.);
+    Print original, compensated;
+    init_and_process_print({ coupon }, original, config);
+    config.set_deserialize_strict({ { "wall_sequence_switched_compensation", compensation } });
+    init_and_process_print({ coupon }, compensated, config);
+    const auto off = wall_extents(original);
+    const auto on = wall_extents(compensated);
+    REQUIRE(on.size() == 20); // 4mm / 0.2mm; exactly one island per layer.
+    REQUIRE(off.size() == on.size());
+    const bool switching = std::string(sequence) != "inner wall/outer wall";
+    for (size_t i = 0; i < on.size(); ++i) {
+        CAPTURE(i);
+        // Layers 2 through 5 end at 0.4 through 1.0mm. Layer 1 stays unchanged.
+        if (!switching || i == 0 || i >= 5) {
+            CHECK(on[i] == off[i]);
+            continue;
+        }
+        REQUIRE(on[i].size() == off[i].size());
+        for (size_t j = 0; j < on[i].size(); ++j) {
+            CAPTURE(j);
+            CHECK(on[i][j][0] == off[i][j][0]);
+            // Every wall moves inwards on each side by half of the compensation.
+            for (size_t k = 1; k < 5; ++k) {
+                CAPTURE(k);
+                const coord_t inwards = k < 3 ? on[i][j][k] - off[i][j][k] : off[i][j][k] - on[i][j][k];
+                CHECK_THAT(unscale<double>(inwards), Catch::Matchers::WithinAbs(0.5 * compensation, 0.005));
+            }
+        }
     }
 }

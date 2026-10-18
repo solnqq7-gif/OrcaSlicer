@@ -3,9 +3,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
 #include <algorithm>
+#include <map>
+#include <memory>
 #include "libslic3r/Config.hpp"
 #include <vector>
 #include <cstddef>
@@ -55,4 +58,61 @@ TEST_CASE("deep_diff distinguishes absolute and percentage speeds for each varia
     DynamicPrintConfig transferred = reference.config;
     transferred.apply_only(edited.config, diff);
     REQUIRE(*transferred.option("small_perimeter_speed") == *edited.config.option("small_perimeter_speed"));
+}
+
+
+TEST_CASE("Preset deltas preserve a disabled conditional wall toggle with a nonzero threshold", "[PresetDiff][ConditionalWallOrder]")
+{
+    const char *threshold = GENERATE("wall_sequence_overhang_angle", "wall_sequence_bottom_height");
+    CAPTURE(threshold);
+    PresetCollection presets(Preset::TYPE_PRINT, Preset::print_options(),
+                             static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()));
+    auto parent_config = DynamicPrintConfig::full_print_config();
+    parent_config.set_key_value("inherits", new ConfigOptionString(""));
+    const Preset parent = presets.load_preset("", "conditional_parent", parent_config, false);
+    Preset child(Preset::TYPE_PRINT, "conditional_child");
+    child.config = parent.config;
+    child.config.set_key_value("inherits", new ConfigOptionString(parent.name));
+    child.config.set_key_value(threshold, new ConfigOptionFloat(1.));
+    child.config.set_key_value("enable_wall_sequence_overhang", new ConfigOptionBool(false));
+
+    std::unique_ptr<Preset> delta(presets.get_preset_differed_for_save(child));
+    REQUIRE(delta != nullptr);
+    REQUIRE(delta->config.has("enable_wall_sequence_overhang"));
+    delta->config.handle_legacy_composite();
+    CHECK_FALSE(delta->config.opt_bool("enable_wall_sequence_overhang"));
+
+    std::map<std::string, std::string> fields;
+    REQUIRE(presets.get_differed_values_to_update(child, fields) == 0);
+    REQUIRE(fields.count("enable_wall_sequence_overhang") == 1);
+    CHECK(fields.at("enable_wall_sequence_overhang") == "0");
+}
+
+TEST_CASE("Legacy wall switching survives a project refresh from its system preset", "[PresetDiff][ConditionalWallOrder]")
+{
+    const char *threshold = GENERATE("wall_sequence_overhang_angle", "wall_sequence_bottom_height");
+    CAPTURE(threshold);
+    PresetCollection presets(Preset::TYPE_PRINT, Preset::print_options(),
+                             static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()));
+    DynamicPrintConfig system = presets.default_preset().config;
+    REQUIRE_FALSE(system.opt_bool("enable_wall_sequence_overhang"));
+    DynamicPrintConfig project = system;
+    project.erase("enable_wall_sequence_overhang");
+    project.set_key_value(threshold, new ConfigOptionFloat(1.));
+    project.set_key_value("different_settings_to_system", new ConfigOptionStrings({
+        escape_strings_cstyle({ threshold, "wall_loops" }), "filament_flow_ratio", "nozzle_diameter" }));
+    project.handle_legacy_composite();
+    const auto changes = project.option<ConfigOptionStrings>("different_settings_to_system")->values;
+    const auto process_keys = PresetBundle::project_different_keys(changes.front());
+    CHECK(process_keys.count(threshold) == 1);
+    CHECK(process_keys.count("enable_wall_sequence_overhang") == 1);
+    CHECK(changes.at(1) == "filament_flow_ratio");
+    CHECK(changes.at(2) == "nozzle_diameter");
+
+    const auto refreshed = Preset::load_external_config(Preset::TYPE_PRINT, system, project, process_keys,
+        [&](const std::string &) { return &system; });
+    CHECK(refreshed.opt_bool("enable_wall_sequence_overhang"));
+    CHECK(refreshed.opt_float(threshold) == 1.);
+    project.handle_legacy_composite();
+    CHECK(project.option<ConfigOptionStrings>("different_settings_to_system")->values == changes);
 }

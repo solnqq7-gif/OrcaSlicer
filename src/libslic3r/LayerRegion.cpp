@@ -14,6 +14,7 @@
 #include "Polyline.hpp"
 #include "Print.hpp"
 #include "PrintConfig.hpp"
+#include "Slicing.hpp"
 #include "Surface.hpp"
 #include "BoundingBox.hpp"
 #include "SVG.hpp"
@@ -155,6 +156,7 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
         g.upper_slices_same_region = &this->layer()->upper_layer->get_region(region_id)->slices;
 
     g.layer_id              = (int)this->layer()->id();
+    g.object_layer_top_z    = this->layer()->print_z - this->layer()->object()->slicing_parameters().object_print_z_min;
     g.ext_perimeter_flow    = this->flow(frExternalPerimeter);
     g.overhang_flow         = this->bridging_flow(frPerimeter, object_config.thick_bridges);
     g.solid_infill_flow     = this->flow(frSolidInfill);
@@ -164,6 +166,8 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
     if (this->layer()->lower_layer != nullptr) {
         lower_slices   = g.printable_slices(this->layer()->lower_layer->lslices);
         g.lower_slices = &lower_slices;
+        g.lower_slices_for_wall_sequence = &this->layer()->lower_layer->lslices;
+        g.lower_slice_z = this->layer()->lower_layer->slice_z;
     }
 
     if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Arachne && !spiral_mode)

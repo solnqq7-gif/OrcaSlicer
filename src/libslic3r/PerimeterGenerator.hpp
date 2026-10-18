@@ -89,9 +89,14 @@ public:
     const ExPolygons            *upper_slices;
     const SurfaceCollection     *upper_slices_same_region;
     const ExPolygons            *lower_slices;
+    // Unfiltered geometry for slope comparisons; printable lower_slices still govern extrusion support.
+    const ExPolygons            *lower_slices_for_wall_sequence = nullptr;
     double                       layer_height;
     int                          layer_id;
     coordf_t                     slice_z;
+    coordf_t                     lower_slice_z = 0.;
+    // Top of this layer, measured from the bottom of the object.
+    coordf_t                     object_layer_top_z = 0.;
     Flow                         perimeter_flow;
     Flow                         ext_perimeter_flow;
     Flow                         overhang_flow;
@@ -111,6 +116,9 @@ public:
     std::vector<Polygons>       m_lower_polygons_series;
     std::vector<Polygons>       m_external_lower_polygons_series;
     std::vector<Polygons>       m_smaller_external_lower_polygons_series;
+
+    // Walls printing order of the island being processed, see update_island_wall_sequence().
+    WallSequence                                    island_wall_sequence = WallSequence::InnerOuter;
 
     bool                                            has_fuzzy_skin = false;
     bool                                            has_fuzzy_hole = false;
@@ -170,6 +178,11 @@ private:
     void split_top_surfaces(const ExPolygons &orig_polygons, ExPolygons &top_fills, ExPolygons &non_top_polygons, ExPolygons &fill_clip) const;
     void apply_extra_perimeters(ExPolygons& infill_area);
     void process_no_bridge(Surfaces& all_surfaces, coord_t perimeter_spacing, coord_t ext_perimeter_width);
+    bool wall_sequence_switch_enabled() const;
+    void prepare_wall_sequence_overhang_detection();
+    void update_island_wall_sequence(const ExPolygon &island);
+    bool precise_outer_wall_enabled() const;
+    double switched_island_compensation() const;
 
 private:
     bool        m_spiral_vase;
@@ -181,6 +194,10 @@ private:
     //BBS
     double      m_ext_mm3_per_mm_smaller_width;
     Polygons    m_lower_slices_polygons;
+    // Lower slices grown by the distance an overhang of wall_sequence_overhang_angle sticks out over one layer.
+    Polygons    m_wall_sequence_lower_polygons;
+    // The same for wall_sequence_overhang_max_angle, empty unless it is above wall_sequence_overhang_angle.
+    Polygons    m_wall_sequence_max_lower_polygons;
 };
 
 }

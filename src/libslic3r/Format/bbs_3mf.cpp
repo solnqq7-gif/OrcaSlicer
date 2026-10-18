@@ -2310,6 +2310,26 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (!_generate_volumes_new(*model_object, object_id_list, *volumes_ptr, config_substitutions))
                 return false;
 
+            // Pre-checkbox projects may store the thresholds only in local settings.
+            // An explicit project/object toggle must keep governing its descendants.
+            // Geometry-only import intentionally skips project settings; missing keys do not imply a legacy project.
+            if (m_load_config && !config.has("enable_wall_sequence_overhang") &&
+                !model_object->config.has("enable_wall_sequence_overhang")) {
+                auto convert_wall_sequence = [](ModelConfig &local_config) {
+                    if (!local_config.has("enable_wall_sequence_overhang") &&
+                        (local_config.has("wall_sequence_overhang_angle") || local_config.has("wall_sequence_bottom_height"))) {
+                        DynamicPrintConfig converted = local_config.get();
+                        converted.handle_legacy_composite();
+                        local_config.assign_config(std::move(converted));
+                    }
+                };
+                convert_wall_sequence(model_object->config);
+                for (ModelVolume *volume : model_object->volumes)
+                    convert_wall_sequence(volume->config);
+                for (auto &range : model_object->layer_config_ranges)
+                    convert_wall_sequence(range.second);
+            }
+
             // Apply cut information for object if any was loaded
             // m_cut_object_ids are indexed by a 1 based model object index.
             IdToCutObjectInfoMap::iterator cut_object_info = m_cut_object_infos.find(object.second + 1);
