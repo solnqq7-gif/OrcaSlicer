@@ -1,0 +1,205 @@
+name: Print report / 列印回報
+description: A/B/C prints of the conditional wall order test build / 牆順序測試版的 A/B/C 列印結果
+title: "[Print] <printer> – <material> – <model>"
+labels: ["print-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing. Please follow [TESTING.md](../blob/HEAD/wall-order-test/TESTING.md). Worse results are as useful as better ones.
+        感謝測試！請依照 [TESTING.zh-TW.md](../blob/HEAD/wall-order-test/TESTING.zh-TW.md)。結果變差也一樣有價值。
+
+  - type: input
+    id: build
+    attributes:
+      label: Test build / 測試版版本
+      description: Release name, for example v2.5.0-alpha-wallorder.1 / Release 名稱
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 作業系統
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+
+  - type: input
+    id: printer
+    attributes:
+      label: Printer / 印表機
+      description: Brand and model, and any relevant mods / 品牌型號，以及相關改裝
+      placeholder: Creality K1 Max (stock)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: printer_family
+    attributes:
+      label: Printer type / 印表機類型
+      options: [CoreXY, Bed slinger (i3) / 床動式, Delta, Other / 其他]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: firmware
+    attributes:
+      label: Firmware / 韌體
+      options: [Klipper, Marlin, Bambu Lab, RepRapFirmware, Prusa, Other / 其他]
+    validations:
+      required: true
+
+  - type: input
+    id: nozzle
+    attributes:
+      label: Nozzle diameter (mm) / 噴嘴直徑
+      placeholder: "0.4"
+    validations:
+      required: true
+
+  - type: input
+    id: material
+    attributes:
+      label: Material / 材料
+      description: Type and brand / 種類與品牌
+      placeholder: PETG-CF, brand X
+    validations:
+      required: true
+
+  - type: input
+    id: layer_height
+    attributes:
+      label: Layer height (mm) / 層高
+      placeholder: "0.16"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: wall_generator
+    attributes:
+      label: Wall generator / 牆產生器
+      options: [Arachne, Classic / 經典]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: base_order
+    attributes:
+      label: Wall order of A and C / A 和 C 的牆順序
+      options: [Inner/Outer/Inner / 內牆/外牆/內牆, Outer/Inner / 外牆/內牆]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model / 模型
+      options:
+        - 453MF_底座3mm (45°, base)
+        - 603MF_底座3mm (60°, base)
+        - 753MF_底座3mm (75°, base)
+        - 453MF (45°, at the bed)
+        - 603MF (60°, at the bed)
+        - 753MF (75°, at the bed)
+        - Own model / 自己的模型
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature_settings
+    attributes:
+      label: Settings of print C / C 的功能設定
+      description: Every option of the feature that you changed from its default / 列出改過預設值的每個選項
+      value: |
+        Inner/Outer on overhangs / 懸空處使用內牆/外牆: 40°
+        Maximum overhang angle / 角度上限: 0
+        Inner/Outer up to height / 此高度以下: 0
+        Elephant foot compensation layers / 象腳補償層: off
+        Precise wall on switched layers / 精準外牆尺寸: off
+        Size compensation on switched layers / 內縮補償: 0
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: protocol
+    attributes:
+      label: Protocol / 步驟確認
+      options:
+        - label: A, B and C differ only in the wall settings / A、B、C 只有牆的設定不同
+        - label: One object per plate, same position and orientation / 每盤一個物件，位置和方向相同
+        - label: Same spool and printer state for all three / 三次用同一卷線材、印表機狀態相同
+        - label: The checker showed switched layers on the overhang of C / 檢查工具顯示 C 的懸空處有切換的層
+
+  - type: dropdown
+    id: underside_vs_a
+    attributes:
+      label: Overhang underside, C compared with A / 倒角下側：C 和 A 比
+      options: [Much better / 好很多, Better / 較好, Same / 一樣, Worse / 較差, Much worse / 差很多]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: underside_vs_b
+    attributes:
+      label: Overhang underside, C compared with B / 倒角下側：C 和 B 比
+      options: [Much better / 好很多, Better / 較好, Same / 一樣, Worse / 較差, Much worse / 差很多]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: switch_line
+    attributes:
+      label: Visible line where the order switches, on C / C 的切換處看得到線嗎
+      options: [None / 沒有, Faint (raking light only) / 很淡（斜光下才看得到）, Visible / 看得到, Strong / 很明顯]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vertical_walls
+    attributes:
+      label: Vertical walls away from the overhang, C compared with A / 遠離倒角的垂直牆面：C 和 A 比
+      options: [Same / 一樣, Different (describe below) / 不同（請在下面描述）]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: keep
+    attributes:
+      label: Which print would you keep? / 你會留哪一個？
+      options: [A, B, C, No difference / 沒差]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: blind
+    attributes:
+      label: Was the ranking blind? / 是否盲測？
+      description: Someone ranked the parts without knowing which was which / 有人在不知道哪個是哪個的情況下排序
+      options: [No / 否, Yes / 是]
+    validations:
+      required: true
+
+  - type: textarea
+    id: observations
+    attributes:
+      label: Observations / 觀察
+      description: Anything unusual during printing, measurements, other values you tried / 列印中的異常、量測、試過的其他數值
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Photos and files / 照片與檔案
+      description: |
+        Drag the photos here, and one zip with A/B/C G-code or sliced 3MF files (GitHub does not accept .gcode/.3mf directly).
+        把照片拖到這裡，以及一個包含 A/B/C G-code 或切片 3MF 的 zip（GitHub 不接受直接上傳 .gcode/.3mf）。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Use of this report / 回報的使用
+      options:
+        - label: I agree that this report, its photos and files may be summarised here and linked from a pull request to OrcaSlicer / 我同意這份回報、照片和檔案在此彙整，並可從提交給 OrcaSlicer 的 pull request 連結
+          required: true

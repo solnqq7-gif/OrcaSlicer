@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Community Support (Discord channel)
-    url: https://discord.gg/P4VE9UY9gJ
-    about: Please ask and answer support "how do I?"questions here.
-  - name: Discussion Forum
-    url: https://github.com/OrcaSlicer/OrcaSlicer/discussions
-    about: Please raise ideas and feature suggestions here.
+  - name: Test instructions / 測試說明
+    url: https://github.com/solnqq7-gif/OrcaSlicer/blob/HEAD/wall-order-test/README.md
+    about: How to install the test build and run the A/B/C test / 安裝測試版與 A/B/C 測試的方法
+  - name: Problems not related to this feature → OrcaSlicer / 和這個功能無關的問題 → OrcaSlicer 官方
+    url: https://github.com/OrcaSlicer/OrcaSlicer/issues
+    about: This repository only tracks the conditional wall order test / 本倉庫只處理牆順序測試

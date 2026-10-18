@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wall order checker</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2228; --muted: #5d6670; --line: #d9dee4;
+  --accent: #0f7b6c; --orig: #8a96a3; --io: #e8590c; --mixed: #b5179e; --na: #e3e7ec; --bad: #c92a2a; --ok: #2b8a3e;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15181c; --panel: #1e2227; --text: #e6e9ec; --muted: #9aa4ae; --line: #343a42;
+    --accent: #3fc1aa; --orig: #6c7884; --io: #ff8a3d; --mixed: #e05ccc; --na: #2a3037; --bad: #ff6b6b; --ok: #51cf66;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.45rem; margin: 0 0 4px; }
+h2 { font-size: 1.1rem; margin: 0 0 8px; }
+h3 { font-size: .95rem; margin: 16px 0 6px; color: var(--muted); font-weight: 600; }
+p.lead { color: var(--muted); margin: 0 0 16px; }
+.top { display: flex; justify-content: space-between; gap: 12px; align-items: start; flex-wrap: wrap; }
+button, select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+#drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; background: var(--panel); cursor: pointer; }
+#drop.over { border-color: var(--accent); }
+#drop small { color: var(--muted); display: block; margin-top: 4px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; overflow: hidden; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .8rem; font-weight: 600; border: 1px solid currentColor; }
+.badge.test { color: var(--accent); } .badge.other { color: var(--muted); } .badge.bad { color: var(--bad); } .badge.ok { color: var(--ok); }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+td, th { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.k { color: var(--muted); width: 45%; } td.v { font-family: var(--mono); word-break: break-all; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+.strip { display: flex; height: 26px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); cursor: pointer; }
+.strip div { flex: 1 1 0; min-width: 0; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.viewer { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; margin-top: 8px; }
+@media (max-width: 760px) { .viewer { grid-template-columns: 1fr; } }
+canvas { width: 100%; aspect-ratio: 1 / 1; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; display: block; }
+.side { font-size: .85rem; }
+.side input[type=range] { width: 100%; }
+.mono { font-family: var(--mono); font-size: .85rem; }
+ol.seq { margin: 6px 0; padding-left: 1.6em; max-height: 320px; overflow-y: auto; font-size: .82rem; }
+ol.seq li i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+pre { font-family: var(--mono); font-size: .8rem; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; white-space: pre; }
+.note { font-size: .82rem; color: var(--muted); }
+.res-ok { color: var(--ok); font-weight: 600; } .res-bad { color: var(--bad); font-weight: 600; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1 data-t="title"></h1>
+      <p class="lead" data-t="lead"></p>
+    </div>
+    <div class="row">
+      <select id="lang" aria-label="Language"><option value="en">English</option><option value="zh">繁體中文</option></select>
+    </div>
+  </div>
+
+  <div id="drop" tabindex="0" role="button">
+    <strong data-t="drop"></strong>
+    <small data-t="dropHint"></small>
+    <input id="file" type="file" multiple accept=".gcode,.gco,.3mf" hidden>
+  </div>
+
+  <div id="compare"></div>
+  <div id="files"></div>
+  <p class="note" data-t="privacy" style="margin-top:24px"></p>
+</main>
+<script>
+"use strict";
+// ---------------------------------------------------------------- texts
+const T = {
+  en: {
+    title: "Wall order G-code checker",
+    lead: "For the conditional wall order test build of OrcaSlicer. Shows which build and settings produced a G-code, which layers were printed Inner/Outer, and whether two G-codes produce the same moves.",
+    drop: "Drop G-code or sliced 3MF files here, or click to choose",
+    dropHint: "One file: analysis. Two or more files: the first two are also compared.",
+    privacy: "Runs entirely in your browser. Files are not uploaded anywhere.",
+    reading: "Reading…", build: "Build", testBuild: "test build", otherBuild: "no wall-order settings (official or other build)",
+    generator: "Generated by", featureSettings: "Wall order settings", printSettings: "Print settings",
+    layers: "Layers", estimate: "Estimated wall order per layer", switchedLayers: "Layers printed Inner/Outer",
+    none: "none", ranges: "z ranges", orig: "original order", io: "Inner/Outer (switched)", mixed: "some islands switched",
+    na: "cannot tell (single wall)", first: "first layer (never switched)", layer: "Layer", order: "Print order of wall loops: blue = first, yellow = last; outer wall drawn thicker, numbers mark the start of each loop.",
+    islands: "islands", loops: "loops", copy: "Copy summary", copied: "Copied",
+    baseIO: "The wall order is already Inner/Outer, the feature has nothing to switch.",
+    noCfg: "No configuration block found: export the G-code from OrcaSlicer without post-processing scripts that remove it.",
+    estimateNote: "Estimate from the G-code: for each island, whether all its internal wall loops are printed before its external wall loops. Layers with a single wall cannot be told apart.",
+    compare: "Comparison", movesSame: "Same moves: every command from the first layer to the end is identical (comments ignored).",
+    movesDiff: "Moves differ.", firstDiff: "First difference at command", cfgDiff: "Settings that differ",
+    cfgSame: "Same settings (apart from preset names).", onlyWall: "Only wall settings differ: a fair comparison.",
+    otherKeys: "Other settings differ too: not a fair A/B/C comparison.", lines: "commands",
+    zipNoGcode: "This 3MF contains no sliced G-code. Use “Export plate sliced file” after slicing.",
+    zipUnsupported: "Your browser cannot unpack this 3MF. Export the G-code instead.",
+    plate: "plate", outerWall: "Outer wall", innerWall: "Inner wall", overhangWall: "Overhang wall"
+  },
+  zh: {
+    title: "牆順序 G-code 檢查工具",
+    lead: "給 OrcaSlicer 牆順序測試版使用。顯示 G-code 是哪個版本、哪些設定切出來的，哪些層用內牆/外牆列印，以及兩個 G-code 的移動是否相同。",
+    drop: "把 G-code 或切片後的 3MF 拖到這裡，或點一下選擇檔案",
+    dropHint: "一個檔案：分析。兩個以上：前兩個也會互相比對。",
+    privacy: "完全在瀏覽器裡執行，檔案不會上傳到任何地方。",
+    reading: "讀取中…", build: "版本", testBuild: "測試版", otherBuild: "沒有牆順序設定（官方或其他版本）",
+    generator: "產生程式", featureSettings: "牆順序設定", printSettings: "列印設定",
+    layers: "層數", estimate: "各層牆順序（估計）", switchedLayers: "用內牆/外牆列印的層",
+    none: "無", ranges: "高度範圍", orig: "原本順序", io: "內牆/外牆（已切換）", mixed: "部分區塊切換",
+    na: "無法判斷（只有一圈牆）", first: "第一層（不會切換）", layer: "層", order: "牆的列印順序：藍 = 最先，黃 = 最後；外牆畫得較粗，數字標在每一圈的起點。",
+    islands: "區塊", loops: "圈", copy: "複製摘要", copied: "已複製",
+    baseIO: "牆順序已經是內牆/外牆，這個功能沒有可切換的層。",
+    noCfg: "找不到設定區塊：請從 OrcaSlicer 匯出 G-code，不要用會刪掉設定區塊的後處理腳本。",
+    estimateNote: "由 G-code 估計：看每個區塊的內牆是否全部在外牆之前列印。只有一圈牆的層無法判斷。",
+    compare: "比對", movesSame: "移動相同：從第一層到結尾的每一行指令都一樣（不含註解）。",
+    movesDiff: "移動不同。", firstDiff: "第一個不同的指令", cfgDiff: "不同的設定",
+    cfgSame: "設定相同（預設名稱除外）。", onlyWall: "只有牆的設定不同：是公平的比較。",
+    otherKeys: "還有其他設定不同：不是公平的 A/B/C 比較。", lines: "行指令",
+    zipNoGcode: "這個 3MF 沒有切片後的 G-code。切片後請用「匯出單一列印板切片檔案」。",
+    zipUnsupported: "你的瀏覽器無法解開這個 3MF，請改為匯出 G-code。",
+    plate: "列印板", outerWall: "外牆", innerWall: "內牆", overhangWall: "懸空牆"
+  }
+};
+let lang = (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+try { lang = localStorage.getItem("wo-lang") || lang; } catch (e) {}
+const t = k => (T[lang] && T[lang][k]) || T.en[k] || k;
+
+const FEATURE_KEYS = ["enable_wall_sequence_overhang", "wall_sequence_overhang_angle", "wall_sequence_overhang_max_angle",
+  "wall_sequence_bottom_height", "wall_sequence_elefant_foot_layers", "wall_sequence_precise_outer_wall",
+  "wall_sequence_switched_compensation"];
+const PRINT_KEYS = ["printer_settings_id", "print_settings_id", "filament_settings_id", "filament_type", "nozzle_diameter",
+  "layer_height", "initial_layer_print_height", "wall_loops", "wall_generator", "wall_sequence", "seam_position",
+  "overhang_reverse", "precise_outer_wall", "elefant_foot_compensation", "elefant_foot_compensation_layers", "raft_layers",
+  "fuzzy_skin", "spiral_mode", "only_one_wall_top"];
+// keys allowed to differ between A, B and C
+const WALL_KEYS = new Set(["wall_sequence", ...FEATURE_KEYS]);
+const VOLATILE = /^(print_settings_id|printer_settings_id|filament_settings_id|different_settings_to_system|inherits_group|print_compatible_printers|.*_settings_id|compatible_machine_expression_group|compatible_process_expression_group|.*_time|total_.*|.*estimated.*|model label id)$/;
+
+// ---------------------------------------------------------------- reading files
+async function readEntries(file) {
+  if (!/\.3mf$/i.test(file.name)) return [{ name: file.name, text: await file.text() }];
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error("not a zip file");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (!/^Metadata\/plate_\d+\.gcode$/.test(name)) continue;
+    const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const data = buf.subarray(start, start + csize);
+    let text;
+    if (method === 0) text = new TextDecoder().decode(data);
+    else if (method === 8) {
+      if (typeof DecompressionStream === "undefined") throw new Error(t("zipUnsupported"));
+      const s = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      text = await new Response(s).text();
+    } else throw new Error("unsupported zip method " + method);
+    out.push({ name: `${file.name} (${t("plate")} ${name.match(/\d+/)[0]})`, text });
+  }
+  if (!out.length) throw new Error(t("zipNoGcode"));
+  return out;
+}
+
+// ---------------------------------------------------------------- parsing
+function parse(name, text) {
+  const lines = text.split(/\r?\n/);
+  const cfg = {}; let inCfg = false, generator = "";
+  const layers = []; let layer = null, feat = "";
+  let x = 0, y = 0, e = 0, relE = false, relXY = false;
+  const commands = []; let started = false;
+  let loop = null;
+  const endLoop = () => { if (loop) { layer.loops.push(loop); loop = null; } };
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (raw.startsWith(";")) {
+      if (raw.startsWith("; CONFIG_BLOCK_START")) { inCfg = true; continue; }
+      if (raw.startsWith("; CONFIG_BLOCK_END")) { inCfg = false; continue; }
+      if (inCfg) { const m = raw.match(/^; ([^=]+?) = (.*)$/); if (m) cfg[m[1]] = m[2]; continue; }
+      if (!generator && raw.startsWith("; generated by ")) generator = raw.slice(15).replace(/ on \d{4}.*$/, "");
+      if (raw.startsWith(";LAYER_CHANGE")) { if (layer) endLoop(); layer = { z: null, loops: [] }; layers.push(layer); started = true; continue; }
+      if (raw.startsWith(";Z:") && layer) { layer.z = parseFloat(raw.slice(3)); continue; }
+      if (raw.startsWith(";TYPE:")) { feat = raw.slice(6).trim(); continue; }
+      continue;
+    }
+    const code = raw.split(";")[0].trim();
+    if (!code) continue;
+    if (started && !inCfg) commands.push(code);
+    const cmd = code.split(/\s+/)[0];
+    if (cmd === "M83") { relE = true; continue; }
+    if (cmd === "M82") { relE = false; continue; }
+    if (cmd === "G90") { relXY = false; continue; }
+    if (cmd === "G91") { relXY = true; continue; }
+    if (cmd !== "G0" && cmd !== "G1" && cmd !== "G2" && cmd !== "G3" && cmd !== "G92") continue;
+    const v = {};
+    for (const m of code.matchAll(/([XYEIJ])(-?\d*\.?\d+)/g)) v[m[1]] = parseFloat(m[2]);
+    if (cmd === "G92") { if ("E" in v) e = v.E; if ("X" in v) x = v.X; if ("Y" in v) y = v.Y; continue; }
+    const x0 = x, y0 = y;
+    if ("X" in v) x = relXY ? x + v.X : v.X;
+    if ("Y" in v) y = relXY ? y + v.Y : v.Y;
+    let de = 0;
+    if ("E" in v) { de = relE ? v.E : v.E - e; e = relE ? e + v.E : v.E; }
+    if (!layer) continue;
+    const isWall = feat === "Outer wall" || feat === "Inner wall" || feat === "Overhang wall";
+    if (!isWall || de <= 1e-7 || (x === x0 && y === y0)) { if (!isWall || (x !== x0 || y !== y0)) endLoop(); continue; }
+    const seg = { x0, y0, x1: x, y1: y, arc: cmd === "G2" ? -1 : cmd === "G3" ? 1 : 0, i: v.I || 0, j: v.J || 0, type: feat };
+    if (!loop || loop.end[0] !== x0 || loop.end[1] !== y0) { endLoop(); loop = { segs: [], end: [x, y], types: new Set() }; }
+    loop.segs.push(seg); loop.end = [x, y]; loop.types.add(feat);
+  }
+  if (layer) endLoop();
+  for (const L of layers) for (const lp of L.loops) {
+    let a = 0, minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+    for (const s of lp.segs) {
+      a += s.x0 * s.y1 - s.x1 * s.y0;
+      minx = Math.min(minx, s.x0, s.x1); maxx = Math.max(maxx, s.x0, s.x1);
+      miny = Math.min(miny, s.y0, s.y1); maxy = Math.max(maxy, s.y0, s.y1);
+    }
+    lp.bbox = [minx, miny, maxx, maxy];
+    lp.size = (maxx - minx) * (maxy - miny);
+  }
+  return { name, cfg, generator, layers: layers.filter(L => L.loops.length), commands };
+}
+
+// group consecutive loops into islands by overlapping bounding boxes, then find each island's external loop
+function classify(doc) {
+  const base = doc.cfg.wall_sequence || "";
+  const baseKind = /inner-outer-inner/.test(base) ? "IOI" : /outer wall\/inner wall/.test(base) ? "OI" : /inner wall\/outer wall/.test(base) ? "IO" : "?";
+  const overlap = (a, b) => a[0] <= b[2] + 0.5 && b[0] <= a[2] + 0.5 && a[1] <= b[3] + 0.5 && b[1] <= a[3] + 0.5;
+  for (const L of doc.layers) {
+    const islands = [];
+    let cur = null;
+    L.loops.forEach((lp, idx) => {
+      lp.index = idx;
+      if (cur && overlap(cur.bbox, lp.bbox)) {
+        cur.loops.push(lp);
+        cur.bbox = [Math.min(cur.bbox[0], lp.bbox[0]), Math.min(cur.bbox[1], lp.bbox[1]), Math.max(cur.bbox[2], lp.bbox[2]), Math.max(cur.bbox[3], lp.bbox[3])];
+      } else { cur = { loops: [lp], bbox: lp.bbox.slice() }; islands.push(cur); }
+    });
+    // Loops typed "Overhang wall" only can be internal or external, so they are left out. In Inner/Outer order every
+    // internal loop of an island comes before its external loops (holes included); in Inner/Outer/Inner some internal
+    // loop follows an external one; in Outer/Inner the external loops come first.
+    const states = islands.map(isl => {
+      for (const lp of isl.loops) lp.kind = lp.types.has("Outer wall") ? "O" : lp.types.has("Inner wall") ? "I" : "?";
+      if (!isl.loops.some(lp => lp.kind === "O")) {
+        let ext = isl.loops[0];
+        for (const lp of isl.loops) if (lp.size > ext.size + 1e-9) ext = lp;
+        ext.kind = "O";
+      }
+      for (const lp of isl.loops) lp.external = lp.kind === "O";
+      const seq = isl.loops.map(lp => lp.kind).filter(k => k !== "?");
+      const firstI = seq.indexOf("I"), lastI = seq.lastIndexOf("I"), firstO = seq.indexOf("O"), lastO = seq.lastIndexOf("O");
+      if (firstI < 0 || firstO < 0) return "na";
+      const ioLike = firstO > lastI, oiLike = lastO < firstI;
+      // with two walls Inner/Outer/Inner prints the external wall first, so it still differs from Inner/Outer
+      if (baseKind === "IOI") return ioLike ? "io" : "orig";
+      if (baseKind === "OI") return ioLike ? "io" : oiLike ? "orig" : "na";
+      return "na";
+    });
+    L.islands = islands.length;
+    const known = states.filter(s => s !== "na");
+    L.state = !known.length ? "na" : known.every(s => s === "io") ? "io" : known.every(s => s === "orig") ? "orig" : "mixed";
+  }
+  // the first layer is printed the same way in every wall order and is never switched by the feature
+  if (doc.layers.length) doc.layers[0].state = "first";
+  doc.baseKind = baseKind;
+  doc.switched = doc.layers.filter(L => L.state === "io" || L.state === "mixed");
+  const r = []; let s = null, prev = null;
+  for (const L of doc.layers) {
+    const on = L.state === "io" || L.state === "mixed";
+    if (on && !s) s = L.z;
+    if (!on && s !== null) { r.push([s, prev]); s = null; }
+    prev = L.z;
+  }
+  if (s !== null) r.push([s, prev]);
+  doc.ranges = r;
+}
+
+// ---------------------------------------------------------------- rendering
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = z => (z == null ? "?" : (+z).toFixed(2));
+const COLORS = { orig: "var(--orig)", io: "var(--io)", mixed: "var(--mixed)", na: "var(--na)", first: "var(--na)" };
+let docs = [];
+
+function isTest(doc) { return FEATURE_KEYS.some(k => k in doc.cfg); }
+
+function summaryText(doc) {
+  const lines = [`File: ${doc.name}`, `Generator: ${doc.generator || "?"}`,
+    `Build: ${isTest(doc) ? "test build (wall order settings present)" : "no wall order settings"}`];
+  for (const k of FEATURE_KEYS) if (k in doc.cfg) lines.push(`${k} = ${doc.cfg[k]}`);
+  for (const k of ["printer_settings_id", "nozzle_diameter", "layer_height", "wall_loops", "wall_generator", "wall_sequence", "seam_position"])
+    if (k in doc.cfg) lines.push(`${k} = ${doc.cfg[k]}`);
+  lines.push(`Layers: ${doc.layers.length}; printed Inner/Outer (estimate): ${doc.switched.length}` +
+    (doc.ranges.length ? `; z ${doc.ranges.map(([a, b]) => a === b ? fmt(a) : `${fmt(a)}-${fmt(b)}`).join(", ")}` : ""));
+  return lines.join("\n");
+}
+
+function table(keys, cfg) {
+  return "<table>" + keys.filter(k => k in cfg).map(k => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(cfg[k])}</td></tr>`).join("") + "</table>";
+}
+
+function renderDoc(doc, idx) {
+  const card = document.createElement("section");
+  card.className = "card";
+  const test = isTest(doc);
+  const hasCfg = Object.keys(doc.cfg).length > 0;
+  const strip = doc.layers.map((L, i) => `<div data-i="${i}" title="${t("layer")} ${i + 1}, z ${fmt(L.z)}: ${t(L.state)}" style="background:${COLORS[L.state]}"></div>`).join("");
+  card.innerHTML = `
+    <div class="top"><h2>${esc(doc.name)}</h2><button data-copy>${t("copy")}</button></div>
+    <div class="row"><span class="badge ${test ? "test" : "other"}">${test ? t("testBuild") : t("otherBuild")}</span>
+      <span class="note">${t("generator")}: ${esc(doc.generator || "?")}</span></div>
+    ${hasCfg ? "" : `<p class="res-bad">${t("noCfg")}</p>`}
+    <div class="grid2">
+      <div><h3>${t("featureSettings")}</h3>${test ? table(FEATURE_KEYS, doc.cfg) : `<p class="note">–</p>`}</div>
+      <div><h3>${t("printSettings")}</h3>${table(PRINT_KEYS, doc.cfg)}</div>
+    </div>
+    <h3>${t("estimate")}</h3>
+    ${doc.baseKind === "IO" ? `<p class="note">${t("baseIO")}</p>` : ""}
+    <div class="strip">${strip}</div>
+    <div class="legend"><span><i style="background:var(--orig)"></i>${t("orig")}</span><span><i style="background:var(--io)"></i>${t("io")}</span>
+      <span><i style="background:var(--mixed)"></i>${t("mixed")}</span><span><i style="background:var(--na)"></i>${t("na")}</span></div>
+    <p><strong>${t("switchedLayers")}:</strong> ${doc.switched.length} / ${doc.layers.length}
+      ${doc.ranges.length ? `&nbsp;·&nbsp;${t("ranges")}: <span class="mono">${doc.ranges.map(([a, b]) => a === b ? fmt(a) : `${fmt(a)}–${fmt(b)}`).join(", ")}</span>` : ` (${t("none")})`}</p>
+    <p class="note">${t("estimateNote")}</p>
+    <div class="viewer">
+      <canvas width="900" height="900"></canvas>
+      <div class="side">
+        <label>${t("layer")} <span class="mono" data-lab></span></label>
+        <input type="range" min="0" max="${Math.max(0, doc.layers.length - 1)}" value="${Math.max(0, doc.layers.indexOf(doc.switched[0] || doc.layers[0]))}">
+        <p class="mono" data-info></p>
+        <ol class="seq" data-seq></ol>
+        <p class="note">${t("order")}</p>
+      </div>
+    </div>`;
+  const canvas = card.querySelector("canvas"), range = card.querySelector("input[type=range]");
+  const draw = () => drawLayer(canvas, doc, +range.value, card);
+  range.addEventListener("input", draw);
+  card.querySelector(".strip").addEventListener("click", ev => { const i = ev.target.dataset.i; if (i !== undefined) { range.value = i; draw(); } });
+  card.querySelector("[data-copy]").addEventListener("click", async ev => {
+    try { await navigator.clipboard.writeText(summaryText(doc)); ev.target.textContent = t("copied"); } catch (e) { prompt("", summaryText(doc)); }
+  });
+  draw();
+  return card;
+}
+
+function drawLayer(canvas, doc, i, card) {
+  const L = doc.layers[i];
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!L) return;
+  card.querySelector("[data-lab]").textContent = `${i + 1} / ${doc.layers.length}, z ${fmt(L.z)}`;
+  card.querySelector("[data-info]").textContent = `${t(L.state)} · ${L.islands} ${t("islands")} · ${L.loops.length} ${t("loops")}`;
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (const lp of L.loops) { minx = Math.min(minx, lp.bbox[0]); miny = Math.min(miny, lp.bbox[1]); maxx = Math.max(maxx, lp.bbox[2]); maxy = Math.max(maxy, lp.bbox[3]); }
+  const pad = 40, s = Math.min((W - 2 * pad) / Math.max(maxx - minx, 1e-3), (H - 2 * pad) / Math.max(maxy - miny, 1e-3));
+  const ox = (W - (maxx - minx) * s) / 2, oy = (H - (maxy - miny) * s) / 2;
+  const X = v => ox + (v - minx) * s, Y = v => H - (oy + (v - miny) * s);
+  const n = L.loops.length;
+  const color = k => { const f = n > 1 ? k / (n - 1) : 0; return `hsl(${230 - 180 * f}, 85%, ${45 + 10 * f}%)`; };
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  L.loops.forEach((lp, k) => {
+    ctx.strokeStyle = color(k);
+    ctx.lineWidth = lp.external ? 5 : 2.2;
+    ctx.beginPath();
+    for (const sg of lp.segs) {
+      ctx.moveTo(X(sg.x0), Y(sg.y0));
+      if (sg.arc) {
+        const cx = sg.x0 + sg.i, cy = sg.y0 + sg.j, r = Math.hypot(sg.i, sg.j) * s;
+        const a0 = Math.atan2(-(sg.y0 - cy), sg.x0 - cx), a1 = Math.atan2(-(sg.y1 - cy), sg.x1 - cx);
+        // G2 is clockwise with Y up; with the Y axis flipped on screen it turns counter-clockwise
+        ctx.arc(X(cx), Y(cy), r, a0, a1, sg.arc < 0);
+      } else ctx.lineTo(X(sg.x1), Y(sg.y1));
+    }
+    ctx.stroke();
+  });
+  const typeName = lp => lp.kind === "O" ? t("outerWall") : lp.kind === "I" ? t("innerWall") : t("overhangWall");
+  card.querySelector("[data-seq]").innerHTML = L.loops.map((lp, k) =>
+    `<li><i style="background:${color(k)}"></i>${typeName(lp)}${lp.external ? " ●" : ""}</li>`).join("");
+  ctx.font = "bold 20px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  L.loops.forEach((lp, k) => {
+    const sg = lp.segs[0], px = X(sg.x0), py = Y(sg.y0);
+    ctx.fillStyle = color(k); ctx.beginPath(); ctx.arc(px, py, 13, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.fillText(String(k + 1), px, py + 1);
+  });
+}
+
+function renderCompare(a, b) {
+  const box = document.getElementById("compare");
+  const n = Math.min(a.commands.length, b.commands.length);
+  let first = -1;
+  for (let i = 0; i < n; i++) if (a.commands[i] !== b.commands[i]) { first = i; break; }
+  if (first < 0 && a.commands.length !== b.commands.length) first = n;
+  const keys = new Set([...Object.keys(a.cfg), ...Object.keys(b.cfg)]);
+  const diff = [...keys].filter(k => !VOLATILE.test(k) && (a.cfg[k] ?? "–") !== (b.cfg[k] ?? "–")).sort();
+  const other = diff.filter(k => !WALL_KEYS.has(k));
+  const ctxLines = (doc, i) => doc.commands.slice(Math.max(0, i - 3), i + 4).map((c, k) => `${String(Math.max(0, i - 3) + k + 1).padStart(8)}  ${c}`).join("\n");
+  box.innerHTML = `<section class="card"><h2>${t("compare")}: ${esc(a.name)} ↔ ${esc(b.name)}</h2>
+    <p class="${first < 0 ? "res-ok" : "res-bad"}">${first < 0 ? t("movesSame") : t("movesDiff")}</p>
+    <p class="note">${a.commands.length} / ${b.commands.length} ${t("lines")}</p>
+    ${first < 0 ? "" : `<h3>${t("firstDiff")} ${first + 1}</h3><div class="grid2"><pre>${esc(ctxLines(a, first))}</pre><pre>${esc(ctxLines(b, first))}</pre></div>`}
+    <h3>${t("cfgDiff")}</h3>
+    ${diff.length ? `<p class="${other.length ? "res-bad" : "res-ok"}">${other.length ? t("otherKeys") : t("onlyWall")}</p>
+      <table><tr><th></th><th>${esc(a.name)}</th><th>${esc(b.name)}</th></tr>${diff.map(k => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(a.cfg[k] ?? "–")}</td><td class="v">${esc(b.cfg[k] ?? "–")}</td></tr>`).join("")}</table>`
+      : `<p class="res-ok">${t("cfgSame")}</p>`}
+  </section>`;
+}
+
+function renderAll() {
+  document.documentElement.lang = lang === "zh" ? "zh-Hant" : "en";
+  document.querySelectorAll("[data-t]").forEach(el => el.textContent = t(el.dataset.t));
+  document.getElementById("lang").value = lang;
+  const files = document.getElementById("files");
+  files.innerHTML = "";
+  docs.forEach((d, i) => files.appendChild(renderDoc(d, i)));
+  document.getElementById("compare").innerHTML = "";
+  if (docs.length >= 2) renderCompare(docs[0], docs[1]);
+}
+
+async function load(fileList) {
+  const files = document.getElementById("files");
+  files.innerHTML = `<p class="note">${t("reading")}</p>`;
+  docs = [];
+  for (const f of fileList) {
+    try {
+      for (const ent of await readEntries(f)) { const d = parse(ent.name, ent.text); classify(d); docs.push(d); }
+    } catch (e) {
+      docs.push({ name: f.name, error: String(e.message || e) });
+    }
+  }
+  const errors = docs.filter(d => d.error);
+  docs = docs.filter(d => !d.error);
+  renderAll();
+  for (const d of errors) files.insertAdjacentHTML("afterbegin", `<section class="card"><h2>${esc(d.name)}</h2><p class="res-bad">${esc(d.error)}</p></section>`);
+}
+
+const drop = document.getElementById("drop"), input = document.getElementById("file");
+drop.addEventListener("click", () => input.click());
+drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") input.click(); });
+input.addEventListener("change", () => load(input.files));
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); load(e.dataTransfer.files); });
+document.getElementById("lang").addEventListener("change", e => { lang = e.target.value; try { localStorage.setItem("wo-lang", lang); } catch (x) {} renderAll(); });
+renderAll();
+// test hook: window.__wo = { parse, classify } for automated checks
+window.__wo = { parse, classify, readEntries, renderCompare, load };
+</script>
+</body>
+</html>

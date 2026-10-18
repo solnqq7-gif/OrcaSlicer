@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **Unofficial test fork.** This repository is a test build of OrcaSlicer v2.5.0-alpha with one added feature, *change walls printing order on overhangs*, published to collect real prints before proposing it upstream. It is not affiliated with or endorsed by the OrcaSlicer project.
+> → **[How to test / 如何測試](wall-order-test/README.md)** · [繁體中文說明](wall-order-test/README.zh-TW.md)
+>
+> The rest of this page is the original OrcaSlicer README.
+
 <div align="center">
 
 <picture>
